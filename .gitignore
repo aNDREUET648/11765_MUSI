@@ -1,3 +1,18 @@
+# Specific directories and files
+notebooks/hide
+
+#src/localization/EKF.py 
+#src/localization/PF.py 
+
+src/mapping
+#src/EKF_SLAM
+#src/graph_SLAM
+src/fast_SLAM_1/test*
+src/fast_SLAM_2/test*
+notebooks/hide
+
+
+
 # Editors
 .vscode/
 .idea/
@@ -28,7 +43,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+#lib/
 lib64/
 parts/
 sdist/
