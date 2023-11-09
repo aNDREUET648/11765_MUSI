@@ -83,7 +83,6 @@ class ExtendedKalmanFilter():
         # Choose very small process covariance because we are using the ground truth data for initial location
         self.sigma = np.diagflat([1e-10, 1e-10, 1e-10])
         # States with measurement update
-        # Creamos una lista vacía que la llamaremos states_measurement
         self.states_measurement = []
         # State covariance matrix
         self.R = R
@@ -164,25 +163,17 @@ class ExtendedKalmanFilter():
         difference = np.array([measurement[2] - range_expected, measurement[3] - bearing_expected, 0])
         innovation = self.K.dot(difference)
         self.last_timestamp = measurement[0]
-        # Actualiza la posición estimada (línea roja)
         self.states = np.append(self.states, np.array([[self.last_timestamp, x_t + innovation[0], y_t + innovation[1], theta_t + innovation[2]]]), axis=0)
-        # Actualiza la posición estimada (línea negra) 
         self.states_measurement.append([x_t + innovation[0], y_t + innovation[1]])
 
         # ---------------- Step 5: covariance update ------------------#
         self.sigma = (np.identity(3) - self.K.dot(self.H)).dot(self.sigma)
 
     def plot_data(self):
-
-                
-        # Un recuadro con el tamaño más tocho, porque el que viene por defecto es pequeñito.
-        plt.figure(figsize=(14, 14))
         # Ground truth data
         plt.plot(self.groundtruth_data[:, 1], self.groundtruth_data[:, 2], 'b', label="Robot State Ground truth")
 
         # States
-        # Recorrido realizado según estimación
-        # Tanto por "odometría" (v,w), como las actualizaciones que se realizaron en los measurements
         plt.plot(self.states[:, 1], self.states[:, 2], 'r', label="Robot State Estimate")
 
         # Start and end points
@@ -190,10 +181,7 @@ class ExtendedKalmanFilter():
         plt.plot(self.groundtruth_data[-1, 1], self.groundtruth_data[-1, 2], 'yo', label="End point")
 
         # Measurement update locations
-        # Aquí representaremos el recorrido que hace únicamente respecto a los landmarks que ha visto
-        # En este caso el recorrido que hace, lo hace con línea negra
         if (len(self.states_measurement) > 0):
-            # Empezamos convirtiendo nuestra lista states_measurement en un numPy array
             self.states_measurement = np.array(self.states_measurement)
             plt.scatter(self.states_measurement[:, 0], self.states_measurement[:, 1], s=10, c='k', alpha=0.5, label="Measurement updates")
 

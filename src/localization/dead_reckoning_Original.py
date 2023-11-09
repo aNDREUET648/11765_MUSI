@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 '''
-Implementation of EKF Localization with known correspondences.
-See Probabilistic Robotics:
-    1. Page 204, Table 7.2 for full algorithm.
 
 '''
 
@@ -12,17 +9,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-class ExtendedKalmanFilter():
-    def __init__(self, dataset, robot, end_frame, R, Q, plot=True):
+class DeadReckoning():
+    def __init__(self, dataset, robot, end_frame, plot=True):
         self.load_data(dataset, robot, end_frame)
-        self.initialization(R, Q)
-        for data in self.data:
-            if (data[1] == -1):
-                self.motion_update(data)
-            else:
-                self.measurement_update(data)
-        if plot: self.plot_data()
-        #if metrics: self.generate_metrics()
+        self.plot = plot
 
     def load_data(self, dataset, robot, end_frame):
         # Loading dataset
@@ -30,7 +20,6 @@ class ExtendedKalmanFilter():
         self.barcodes_data = np.loadtxt(dataset + "/Barcodes.dat")
         # Ground truth: [Time[s], x[m], y[m], orientation[rad]]
         self.groundtruth_data = np.loadtxt(dataset + "/" + robot +"_Groundtruth.dat")
-        #self.groundtruth_data = self.groundtruth_data[2000:] # Remove initial readings
         # Landmark ground truth: [Subject#, x[m], y[m]]
         self.landmark_groundtruth_data = np.loadtxt(dataset + "/Landmark_Groundtruth.dat")
         # Measurement: [Time[s], Subject#, range[m], bearing[rad]]
@@ -46,14 +35,22 @@ class ExtendedKalmanFilter():
 
         # Remove all data before the fisrt timestamp of groundtruth
         # Use first groundtruth data as the initial location of the robot
+        for i in range(len(self.data)):
+            if (self.data[i][1] == -1):
+                if (self.data[i][0] > self.groundtruth_data[0][0]):
+                    break
+        self.data = self.data[i:]
+        
         for i in range(len(self.groundtruth_data)):
             if (self.groundtruth_data[i][0] > self.data[0][0]):
                 break
         self.groundtruth_data = self.groundtruth_data[i:]
         for i in range(len(self.data)):
-            if (self.data[i][0] > self.groundtruth_data[0][0]):
-                break
+            if (self.data[i][1] == -1):
+                if (self.data[i][0] > self.groundtruth_data[0][0]):
+                    break
         self.data = self.data[i:]
+        
 
         # Remove all data after the specified number of frames
         self.data = self.data[:end_frame]
@@ -63,7 +60,7 @@ class ExtendedKalmanFilter():
             if (self.groundtruth_data[i][0] >= cut_timestamp):
                 break
         self.groundtruth_data = self.groundtruth_data[:i]
-
+        
         # Combine barcode Subject# with landmark Subject# to create lookup-table
         # [x[m], y[m], x std-dev[m], y std-dev[m]]
         self.landmark_locations = {}
@@ -75,23 +72,20 @@ class ExtendedKalmanFilter():
         self.landmark_indexes = {}
         for i in range(5, len(self.barcodes_data), 1):
             self.landmark_indexes[self.barcodes_data[i][1]] = i - 4
-
-    def initialization(self, R, Q):
+           
+    def run(self): 
+        self.initialization()
+        for data in self.data:
+            if (data[1] == -1):
+                self.motion_update(data)
+        if self.plot: self.plot_data()
+            
+    def initialization(self):
         # Initial state
         self.states = np.array([self.groundtruth_data[0]])
         self.last_timestamp = self.states[-1][0]
-        # Choose very small process covariance because we are using the ground truth data for initial location
-        self.sigma = np.diagflat([1e-10, 1e-10, 1e-10])
-        # States with measurement update
-        # Creamos una lista vacía que la llamaremos states_measurement
-        self.states_measurement = []
-        # State covariance matrix
-        self.R = R
-        # Measurement covariance matrix
-        self.Q = Q
 
     def motion_update(self, control):
-        # ------------------ Step 1: Mean update ---------------------#
         # State: [x, y, θ]
         # Control: [v, w]
         # State-transition function (simplified):
@@ -99,6 +93,7 @@ class ExtendedKalmanFilter():
         #   x_t  =  x_t-1 + v * cosθ_t-1 * delta_t
         #   y_t  =  y_t-1 + v * sinθ_t-1 * delta_t
         #   θ_t  =  θ_t-1 + w * delta_t
+        
         # Skip motion update if two odometry data are too close
         delta_t = control[0] - self.last_timestamp
         if (delta_t < 0.001):
@@ -114,88 +109,17 @@ class ExtendedKalmanFilter():
             theta_t += 2 * np.pi
         self.last_timestamp = control[0]
         self.states = np.append(self.states, np.array([[control[0], x_t, y_t, theta_t]]), axis = 0)
-
-        # ------ Step 2: Linearize state-transition by Jacobian ------#
-        # Jacobian: G = d g(u_t, x_t-1) / d x_t-1
-        #         1  0  -v * delta_t * sinθ_t-1
-        #   G  =  0  1   v * delta_t * cosθ_t-1
-        #         0  0             1
-        G_1 = np.array([1, 0, - control[2] * delta_t * np.sin(self.states[-1][3])])
-        G_2 = np.array([0, 1, control[2] * delta_t * np.cos(self.states[-1][3])])
-        G_3 = np.array([0, 0, 1])
-        self.G = np.array([G_1, G_2, G_3])
-
-        # ---------------- Step 3: Covariance update ------------------#
-        self.sigma = self.G.dot(self.sigma).dot(self.G.T) + self.R
-
-    def measurement_update(self, measurement):
-        # Continue if landmark is not found in self.landmark_locations
-        if not measurement[1] in self.landmark_locations:
-            return
-
-        # ---------------- Step 1: Measurement update -----------------#
-        #   range   =  sqrt((x_l - x_t)^2 + (y_l - y_t)^2)
-        #  bearing  =  atan2((y_l - y_t) / (x_l - x_t)) - θ_t
-        x_l = self.landmark_locations[measurement[1]][0]
-        y_l = self.landmark_locations[measurement[1]][1]
-        x_t = self.states[-1][1]
-        y_t = self.states[-1][2]
-        theta_t = self.states[-1][3]
-        q = (x_l - x_t) * (x_l - x_t) + (y_l - y_t) * (y_l - y_t)
-        range_expected = np.sqrt(q)
-        bearing_expected = np.arctan2(y_l - y_t, x_l - x_t) - theta_t
-
-        # -------- Step 2: Linearize Measurement by Jacobian ----------#
-        # Jacobian: H = d h(x_t) / d x_t
-        #        -(x_l - x_t) / sqrt(q)   -(y_l - y_t) / sqrt(q)   0
-        #  H  =      (y_l - y_t) / q         -(x_l - x_t) / q     -1
-        #                  0                         0             0
-        #  q = (x_l - x_t)^2 + (y_l - y_t)^2
-        H_1 = np.array([-(x_l - x_t) / np.sqrt(q), -(y_l - y_t) / np. sqrt(q), 0])
-        H_2 = np.array([(y_l - y_t) / q, -(x_l - x_t) / q, -1])
-        H_3 = np.array([0, 0, 0])
-        self.H = np.array([H_1, H_2, H_3])
-
-        # ---------------- Step 3: Kalman gain update -----------------#
-        S_t = self.H.dot(self.sigma).dot(self.H.T) + self.Q
-        self.K = self.sigma.dot(self.H.T).dot(np.linalg.inv(S_t))
-
-        # ------------------- Step 4: mean update ---------------------#
-        difference = np.array([measurement[2] - range_expected, measurement[3] - bearing_expected, 0])
-        innovation = self.K.dot(difference)
-        self.last_timestamp = measurement[0]
-        # Actualiza la posición estimada (línea roja)
-        self.states = np.append(self.states, np.array([[self.last_timestamp, x_t + innovation[0], y_t + innovation[1], theta_t + innovation[2]]]), axis=0)
-        # Actualiza la posición estimada (línea negra) 
-        self.states_measurement.append([x_t + innovation[0], y_t + innovation[1]])
-
-        # ---------------- Step 5: covariance update ------------------#
-        self.sigma = (np.identity(3) - self.K.dot(self.H)).dot(self.sigma)
-
+        
     def plot_data(self):
-
-                
-        # Un recuadro con el tamaño más tocho, porque el que viene por defecto es pequeñito.
-        plt.figure(figsize=(14, 14))
         # Ground truth data
         plt.plot(self.groundtruth_data[:, 1], self.groundtruth_data[:, 2], 'b', label="Robot State Ground truth")
 
         # States
-        # Recorrido realizado según estimación
-        # Tanto por "odometría" (v,w), como las actualizaciones que se realizaron en los measurements
         plt.plot(self.states[:, 1], self.states[:, 2], 'r', label="Robot State Estimate")
 
         # Start and end points
         plt.plot(self.groundtruth_data[0, 1], self.groundtruth_data[0, 2], 'go', label="Start point")
         plt.plot(self.groundtruth_data[-1, 1], self.groundtruth_data[-1, 2], 'yo', label="End point")
-
-        # Measurement update locations
-        # Aquí representaremos el recorrido que hace únicamente respecto a los landmarks que ha visto
-        # En este caso el recorrido que hace, lo hace con línea negra
-        if (len(self.states_measurement) > 0):
-            # Empezamos convirtiendo nuestra lista states_measurement en un numPy array
-            self.states_measurement = np.array(self.states_measurement)
-            plt.scatter(self.states_measurement[:, 0], self.states_measurement[:, 1], s=10, c='k', alpha=0.5, label="Measurement updates")
 
         # Landmark ground truth locations and indexes
         landmark_xs = []
@@ -208,10 +132,32 @@ class ExtendedKalmanFilter():
         plt.scatter(landmark_xs, landmark_ys, s=200, c='k', alpha=0.2, marker='*', label='Landmark Locations')
 
         # plt.title("Localization with only odometry data")
-        plt.title("EKF Localization with Known Correspondences")
+        plt.title("Dead Reckoning")
         plt.legend()
         plt.show()
         
+    def represent_dataset(self):
+        # Ground truth data
+        plt.plot(self.groundtruth_data[:, 1], self.groundtruth_data[:, 2], 'b', label="Robot State Ground truth")
+
+        # Start and end points
+        plt.plot(self.groundtruth_data[0, 1], self.groundtruth_data[0, 2], 'gx', label="Start point")
+        plt.plot(self.groundtruth_data[-1, 1], self.groundtruth_data[-1, 2], 'rx', label="End point")
+
+        # Landmark ground truth locations and indexes
+        landmark_xs = []
+        landmark_ys = []
+        for location in self.landmark_locations:
+            landmark_xs.append(self.landmark_locations[location][0])
+            landmark_ys.append(self.landmark_locations[location][1])
+            index = self.landmark_indexes[location] + 5
+            plt.text(landmark_xs[-1], landmark_ys[-1], str(index), alpha=0.5, fontsize=10)
+        plt.scatter(landmark_xs, landmark_ys, s=200, c='k', alpha=0.2, marker='*', label='Landmark Locations')
+
+        plt.title("Robot Groundtruth and Map")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+        plt.show()
+            
     def build_dataframes(self):
         self.gt = build_timeseries(self.groundtruth_data, cols=['stamp','x','y','theta'])
         self.states = build_timeseries(self.states, cols=['stamp','x','y','theta'])
@@ -219,6 +165,22 @@ class ExtendedKalmanFilter():
         self.motion = self.measurements[self.measurements.type == -1].rename(columns={'range_l': 'v', 'bearing_l': 'omega'})
         landmarks = self.measurements[self.measurements.type != -1]
         self.sensor = filter_static_landmarks(landmarks, self.barcodes_data)
+        
+        
+    def transform_landmarks(self):
+        self.sensor_gt = self.sensor.join(self.gt).dropna()
+        range_l = self.sensor_gt.range_l
+        bearing_l = self.sensor_gt.bearing_l
+        x_t = self.sensor_gt.x
+        y_t =  self.sensor_gt.y
+        theta_t = self.sensor_gt.theta
+
+        x = range_l*np.cos(bearing_l)
+        y = range_l*np.sin(bearing_l)
+
+        self.sensor_gt['x_l'] = x_t + x*np.cos(theta_t) - y*np.sin(theta_t)
+        self.sensor_gt['y_l'] = y_t + x*np.sin(theta_t) + y*np.cos(theta_t)
+
         
 def build_timeseries(data,cols):
     timeseries = pd.DataFrame(data, columns=cols)
@@ -232,32 +194,10 @@ def filter_static_landmarks(lm, barcodes):
     lm = lm[lm.type > 5] # Keep only static landmarks 
     return lm 
 
-
-#
-# Cuando se ejecuta un archivo, se asigna automáticamente el nombre __main__ a su espacio de nombres. 
-# Por lo que todas las variables y código que estén directamente en el archivo (fuera de las funciones y clases)
-# se ejecutarán cuando el archivo se ejecute como un programa independiente.
-#
-# La línea if __name__ == "__main__": determina si el archivo se está ejecutando como un programa independiente o
-# si se está importando como un módulo en otro programa. 
-# Si se ejecuta como un programa independiente, el código dentro de este bloque if se ejecutará. 
-#
 if __name__ == "__main__":
-    # # Dataset 0
-    # dataset = "../0_Dataset0"
-    # end_frame = 10000
-    # # State covariance matrix
-    # R = np.diagflat(np.array([1.0, 1.0, 1.0])) ** 2
-    # # Measurement covariance matrix
-    # Q = np.diagflat(np.array([350, 350, 1e16])) ** 2
-
     # Dataset 1
     dataset = "data/MRCLAM_Dataset1"
     end_frame = 3200
     robot = 'Robot1'
-    # State covariance matrix
-    R = np.diagflat(np.array([1.0, 1.0, 10.0])) ** 2
-    # Measurement covariance matrix
-    Q = np.diagflat(np.array([30, 30, 1e16])) ** 2
     #
-    ekf = ExtendedKalmanFilter(dataset, robot, end_frame, R, Q)
+    r = Reader(dataset, robot, end_frame)

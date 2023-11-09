@@ -20,9 +20,12 @@ class DeadReckoning():
         self.barcodes_data = np.loadtxt(dataset + "/Barcodes.dat")
         # Ground truth: [Time[s], x[m], y[m], orientation[rad]]
         self.groundtruth_data = np.loadtxt(dataset + "/" + robot +"_Groundtruth.dat")
-        # Landmark ground truth: [Subject#, x[m], y[m]]
+        # Ojo: corregido contenido landmark_groundtruth_data del comentario.
+        # Faltaban las desviaciones estandar.# Measurement: [Time[s], Subject#, range[m], bearing[rad]]
+        # Landmark ground truth: [Subject#, x[m], y[m],x std-dev [m],y std-dev [m] ]
         self.landmark_groundtruth_data = np.loadtxt(dataset + "/Landmark_Groundtruth.dat")
-        # Measurement: [Time[s], Subject#, range[m], bearing[rad]]
+        # Measurement: [Time[s], Subject#, range[m], bearing[rad]]  CREO QUE ESTE ESTÁ MAL
+        # Measurement: [Time[s], Barcode#, range[m], bearing[rad]]  ESTÉ ESTÁ BIEN
         self.measurement_data = np.loadtxt(dataset + "/" + robot +"_Measurement.dat")
         # Odometry: [Time[s], Subject#, forward_V[m/s], angular _v[rad/s]]
         self.odometry_data = np.loadtxt(dataset + "/" + robot +"_Odometry.dat")
@@ -35,16 +38,35 @@ class DeadReckoning():
 
         # Remove all data before the fisrt timestamp of groundtruth
         # Use first groundtruth data as the initial location of the robot
+        
+        # Si hay datos de la odometría antes del primer groundtruth_data
+        # quiere decir que se mueve sin haber situado el robot. ILÓGICO. 
+        
+        #
+        # En este primer for, situamos el indice de data (i) en que el time de groundtruth
+        # es más pequeño que cualquier dato odométrico (data[i][1]=-1).
+        # teniendo el i, nuestro nuevo data será el mismo pero desde el índice i hasta el final
+        #
         for i in range(len(self.data)):
             if (self.data[i][1] == -1):
                 if (self.data[i][0] > self.groundtruth_data[0][0]):
                     break
         self.data = self.data[i:]
         
+        #
+        # Aquí buscamos el timestamp inicial del groundtruth
+        # Claro. Puede ser que en data aún nos queden measurements al principio
+        # Nuestro nuevo groundtruth empezará desde el índice i
+        #
         for i in range(len(self.groundtruth_data)):
             if (self.groundtruth_data[i][0] > self.data[0][0]):
                 break
         self.groundtruth_data = self.groundtruth_data[i:]
+        
+        #
+        # Volvemos a hacer lo mismo que en el primer for. 
+        # De este modo groundtruth y data empezarán en el mismo timestamp (sincronizados)
+        #
         for i in range(len(self.data)):
             if (self.data[i][1] == -1):
                 if (self.data[i][0] > self.groundtruth_data[0][0]):
@@ -55,7 +77,10 @@ class DeadReckoning():
         # Remove all data after the specified number of frames
         self.data = self.data[:end_frame]
         cut_timestamp = self.data[end_frame - 1][0]
+        
         # Remove all groundtruth after the corresponding timestamp
+        # Nos cargamos todos los elementos del groundtruth que estén por encima
+        # del tiempo marcado por el timestamp del
         for i in range(len(self.groundtruth_data)):
             if (self.groundtruth_data[i][0] >= cut_timestamp):
                 break
@@ -77,6 +102,9 @@ class DeadReckoning():
         self.initialization()
         for data in self.data:
             if (data[1] == -1):
+                # Cuando se llama a un método de una instancia de una clase en Python, 
+                # el parámetro self se pasa automáticamente y no es necesario incluirlo en la llamada,
+                # de ahí que no sea self.motion_update(self,data) sino self.motion_update(data)
                 self.motion_update(data)
         if self.plot: self.plot_data()
             
@@ -86,6 +114,9 @@ class DeadReckoning():
         self.last_timestamp = self.states[-1][0]
 
     def motion_update(self, control):
+        #
+        # control esta recibiendo el elemento self.data[i] donde es seguro que es odometría (-1)
+        #
         # State: [x, y, θ]
         # Control: [v, w]
         # State-transition function (simplified):
@@ -99,18 +130,32 @@ class DeadReckoning():
         if (delta_t < 0.001):
             return
         # Compute updated [x, y, theta]
+        #
+        # La primera vez self.states sólo tiene el primer elemento del groundtruth_data ([0])
+        #
         x_t = self.states[-1][1] + control[2] * np.cos(self.states[-1][3]) * delta_t
         y_t = self.states[-1][2] + control[2] * np.sin(self.states[-1][3]) * delta_t
         theta_t = self.states[-1][3] + control[3] * delta_t
+        
         # Limit θ within [-pi, pi]
         if (theta_t > np.pi):
             theta_t -= 2 * np.pi
         elif (theta_t < -np.pi):
             theta_t += 2 * np.pi
+            
+        # Actualizamos el valor de timestamp anterior para calcular el posterior delta_t
         self.last_timestamp = control[0]
+        # Añadimos todos estos nuevos datos como un nuevo elemento del array self.states
+        # que estará compuesto por:
+        
+        
+        # states: [timestamp[s], x[m], y[m], orientation[rad]]
         self.states = np.append(self.states, np.array([[control[0], x_t, y_t, theta_t]]), axis = 0)
         
     def plot_data(self):
+        
+        # Un recuadro con el tamaño más tocho, porque el que viene por defecto es pequeñito.
+        plt.figure(figsize=(14, 14))
         # Ground truth data
         plt.plot(self.groundtruth_data[:, 1], self.groundtruth_data[:, 2], 'b', label="Robot State Ground truth")
 
@@ -137,6 +182,13 @@ class DeadReckoning():
         plt.show()
         
     def represent_dataset(self):
+
+        # Un recuadro con el tamaño más tocho, porque el que viene por defecto es pequeñito.
+        plt.figure(figsize=(14, 14))
+        # Agregar títulos a los ejes
+        #  plt.xlabel("Eje X")
+        #  plt.ylabel("Eje Y")
+        
         # Ground truth data
         plt.plot(self.groundtruth_data[:, 1], self.groundtruth_data[:, 2], 'b', label="Robot State Ground truth")
 
@@ -155,7 +207,18 @@ class DeadReckoning():
         plt.scatter(landmark_xs, landmark_ys, s=200, c='k', alpha=0.2, marker='*', label='Landmark Locations')
 
         plt.title("Robot Groundtruth and Map")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+        # bbox_to_anchor es una tupla (x, y) que determina la ubicación 
+        # de la esquina superior izquierda de la caja de la leyenda en 
+        # coordenadas de la figura. En el ejemplo que proporcionaste, 
+        # (1.05, 1) coloca la caja de la leyenda justo fuera del gráfico en la parte superior derecha.
+        # loc se utiliza para especificar la ubicación de la leyenda. 
+        # En este caso, loc=2 significa que la leyenda se colocará en
+        # la esquina superior izquierda de la caja delimitada por bbox_to_anchor.
+        # borderaxespad es un valor numérico que controla el espacio entre la caja de la leyenda y los ejes.
+        
+        # plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+        
+        plt.legend()
         plt.show()
             
     def build_dataframes(self):
@@ -163,8 +226,8 @@ class DeadReckoning():
         self.states = build_timeseries(self.states, cols=['stamp','x','y','theta'])
         self.measurements = build_timeseries(self.data, cols=['stamp','type','range_l','bearing_l'])
         self.motion = self.measurements[self.measurements.type == -1].rename(columns={'range_l': 'v', 'bearing_l': 'omega'})
-        landmarks = self.measurements[self.measurements.type != -1]
-        self.sensor = filter_static_landmarks(landmarks, self.barcodes_data)
+        self.landmarks = self.measurements[self.measurements.type != -1]
+        self.sensor = filter_static_landmarks(self.landmarks, self.barcodes_data)
         
         
     def transform_landmarks(self):
@@ -200,4 +263,4 @@ if __name__ == "__main__":
     end_frame = 3200
     robot = 'Robot1'
     #
-    r = Reader(dataset, robot, end_frame)
+    r = DeadReckoning(dataset, robot, end_frame)
